@@ -24,7 +24,7 @@
 namespace android {
 namespace hardware {
 namespace wifi {
-namespace V1_3 {
+namespace V1_4 {
 namespace implementation {
 namespace iface_util {
 
@@ -56,6 +56,8 @@ class WifiIfaceUtil {
     virtual void registerIfaceEventHandlers(const std::string& iface_name,
                                             IfaceEventHandlers handlers);
     virtual void unregisterIfaceEventHandlers(const std::string& iface_name);
+    virtual bool setUpState(const std::string& iface_name, bool request_up);
+    virtual unsigned ifNameToIndex(const std::string& iface_name);
 
    private:
     std::array<uint8_t, 6> createRandomMacAddress();
@@ -67,7 +69,7 @@ class WifiIfaceUtil {
 
 }  // namespace iface_util
 }  // namespace implementation
-}  // namespace V1_3
+}  // namespace V1_4
 }  // namespace wifi
 }  // namespace hardware
 }  // namespace android

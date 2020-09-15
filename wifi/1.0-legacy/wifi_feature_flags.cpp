@@ -19,7 +19,7 @@
 namespace android {
 namespace hardware {
 namespace wifi {
-namespace V1_3 {
+namespace V1_4 {
 namespace implementation {
 namespace feature_flags {
 
@@ -144,11 +144,13 @@ static const std::vector<IWifiChip::ChipMode> kChipModes{
 #undef P2P
 #undef NAN
 
-#ifndef WIFI_HIDL_FEATURE_AP_MAC_RANDOMIZATION
-static const bool wifiHidlFeatureDisableApMacRandomization = true;
-#else
-static const bool wifiHidlFeatureDisableApMacRandomization = false;
-#endif  // WIFI_HIDL_FEATURE_AP_MAC_RANDOMIZATION
+#ifdef WIFI_HIDL_FEATURE_DISABLE_AP_MAC_RANDOMIZATION
+#pragma message                                                               \
+    "WIFI_HIDL_FEATURE_DISABLE_AP_MAC_RANDOMIZATION is deprecated; override " \
+    "'config_wifi_ap_randomization_supported' in "                            \
+    "frameworks/base/core/res/res/values/config.xml in the device overlay "   \
+    "instead"
+#endif  // WIFI_HIDL_FEATURE_DISABLE_AP_MAC_RANDOMIZATION
 
 WifiFeatureFlags::WifiFeatureFlags() {}
 
@@ -156,13 +158,9 @@ std::vector<IWifiChip::ChipMode> WifiFeatureFlags::getChipModes() {
     return kChipModes;
 }
 
-bool WifiFeatureFlags::isApMacRandomizationDisabled() {
-    return wifiHidlFeatureDisableApMacRandomization;
-}
-
 }  // namespace feature_flags
 }  // namespace implementation
-}  // namespace V1_3
+}  // namespace V1_4
 }  // namespace wifi
 }  // namespace hardware
 }  // namespace android

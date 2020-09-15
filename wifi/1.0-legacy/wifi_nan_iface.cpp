@@ -24,18 +24,27 @@
 namespace android {
 namespace hardware {
 namespace wifi {
-namespace V1_3 {
+namespace V1_4 {
 namespace implementation {
 using hidl_return_util::validateAndCall;
 
 WifiNanIface::WifiNanIface(
-    const std::string& ifname,
+    const std::string& ifname, bool is_dedicated_iface,
     const std::weak_ptr<legacy_hal::WifiLegacyHal> legacy_hal,
     const std::weak_ptr<iface_util::WifiIfaceUtil> iface_util)
     : ifname_(ifname),
+      is_dedicated_iface_(is_dedicated_iface),
       legacy_hal_(legacy_hal),
       iface_util_(iface_util),
       is_valid_(true) {
+    if (is_dedicated_iface_) {
+        // If using a dedicated iface, set the iface up first.
+        if (!iface_util_.lock()->setUpState(ifname_, true)) {
+            // Fatal failure, invalidate the iface object.
+            invalidate();
+            return;
+        }
+    }
     // Register all the callbacks here. these should be valid for the lifetime
     // of the object. Whenever the mode changes legacy HAL will remove
     // all of these callbacks.
@@ -534,6 +543,10 @@ void WifiNanIface::invalidate() {
     event_cb_handler_.invalidate();
     event_cb_handler_1_2_.invalidate();
     is_valid_ = false;
+    if (is_dedicated_iface_) {
+        // If using a dedicated iface, set the iface down.
+        iface_util_.lock()->setUpState(ifname_, false);
+    }
 }
 
 bool WifiNanIface::isValid() { return is_valid_; }
@@ -576,7 +589,7 @@ Return<void> WifiNanIface::getCapabilitiesRequest(
 }
 
 Return<void> WifiNanIface::enableRequest(uint16_t cmd_id,
-                                         const NanEnableRequest& msg,
+                                         const V1_0::NanEnableRequest& msg,
                                          enableRequest_cb hidl_status_cb) {
     return validateAndCall(this, WifiStatusCode::ERROR_WIFI_IFACE_INVALID,
                            &WifiNanIface::enableRequestInternal, hidl_status_cb,
@@ -584,7 +597,7 @@ Return<void> WifiNanIface::enableRequest(uint16_t cmd_id,
 }
 
 Return<void> WifiNanIface::configRequest(uint16_t cmd_id,
-                                         const NanConfigRequest& msg,
+                                         const V1_0::NanConfigRequest& msg,
                                          configRequest_cb hidl_status_cb) {
     return validateAndCall(this, WifiStatusCode::ERROR_WIFI_IFACE_INVALID,
                            &WifiNanIface::configRequestInternal, hidl_status_cb,
@@ -687,7 +700,7 @@ Return<void> WifiNanIface::registerEventCallback_1_2(
 }
 
 Return<void> WifiNanIface::enableRequest_1_2(
-    uint16_t cmd_id, const NanEnableRequest& msg1,
+    uint16_t cmd_id, const V1_0::NanEnableRequest& msg1,
     const V1_2::NanConfigRequestSupplemental& msg2,
     enableRequest_1_2_cb hidl_status_cb) {
     return validateAndCall(this, WifiStatusCode::ERROR_WIFI_IFACE_INVALID,
@@ -696,11 +709,29 @@ Return<void> WifiNanIface::enableRequest_1_2(
 }
 
 Return<void> WifiNanIface::configRequest_1_2(
-    uint16_t cmd_id, const NanConfigRequest& msg1,
+    uint16_t cmd_id, const V1_0::NanConfigRequest& msg1,
     const V1_2::NanConfigRequestSupplemental& msg2,
     configRequest_1_2_cb hidl_status_cb) {
     return validateAndCall(this, WifiStatusCode::ERROR_WIFI_IFACE_INVALID,
                            &WifiNanIface::configRequest_1_2Internal,
+                           hidl_status_cb, cmd_id, msg1, msg2);
+}
+
+Return<void> WifiNanIface::enableRequest_1_4(
+    uint16_t cmd_id, const NanEnableRequest& msg1,
+    const V1_2::NanConfigRequestSupplemental& msg2,
+    enableRequest_1_4_cb hidl_status_cb) {
+    return validateAndCall(this, WifiStatusCode::ERROR_WIFI_IFACE_INVALID,
+                           &WifiNanIface::enableRequest_1_4Internal,
+                           hidl_status_cb, cmd_id, msg1, msg2);
+}
+
+Return<void> WifiNanIface::configRequest_1_4(
+    uint16_t cmd_id, const NanConfigRequest& msg1,
+    const V1_2::NanConfigRequestSupplemental& msg2,
+    configRequest_1_4_cb hidl_status_cb) {
+    return validateAndCall(this, WifiStatusCode::ERROR_WIFI_IFACE_INVALID,
+                           &WifiNanIface::configRequest_1_4Internal,
                            hidl_status_cb, cmd_id, msg1, msg2);
 }
 
@@ -727,12 +758,12 @@ WifiStatus WifiNanIface::getCapabilitiesRequestInternal(uint16_t cmd_id) {
 }
 
 WifiStatus WifiNanIface::enableRequestInternal(
-    uint16_t /* cmd_id */, const NanEnableRequest& /* msg */) {
+    uint16_t /* cmd_id */, const V1_0::NanEnableRequest& /* msg */) {
     return createWifiStatus(WifiStatusCode::ERROR_NOT_SUPPORTED);
 }
 
 WifiStatus WifiNanIface::configRequestInternal(
-    uint16_t /* cmd_id */, const NanConfigRequest& /* msg */) {
+    uint16_t /* cmd_id */, const V1_0::NanConfigRequest& /* msg */) {
     return createWifiStatus(WifiStatusCode::ERROR_NOT_SUPPORTED);
 }
 
@@ -855,10 +886,22 @@ WifiStatus WifiNanIface::registerEventCallback_1_2Internal(
 }
 
 WifiStatus WifiNanIface::enableRequest_1_2Internal(
+    uint16_t /* cmd_id */, const V1_0::NanEnableRequest& /* msg1 */,
+    const V1_2::NanConfigRequestSupplemental& /*msg2 */) {
+    return createWifiStatus(WifiStatusCode::ERROR_NOT_SUPPORTED);
+}
+
+WifiStatus WifiNanIface::configRequest_1_2Internal(
+    uint16_t /* cmd_id */, const V1_0::NanConfigRequest& /* msg1 */,
+    const V1_2::NanConfigRequestSupplemental& /* msg2 */) {
+    return createWifiStatus(WifiStatusCode::ERROR_NOT_SUPPORTED);
+}
+
+WifiStatus WifiNanIface::enableRequest_1_4Internal(
     uint16_t cmd_id, const NanEnableRequest& msg1,
     const V1_2::NanConfigRequestSupplemental& msg2) {
     legacy_hal::NanEnableRequest legacy_msg;
-    if (!hidl_struct_util::convertHidlNanEnableRequest_1_2ToLegacy(
+    if (!hidl_struct_util::convertHidlNanEnableRequest_1_4ToLegacy(
             msg1, msg2, &legacy_msg)) {
         return createWifiStatus(WifiStatusCode::ERROR_INVALID_ARGS);
     }
@@ -867,11 +910,11 @@ WifiStatus WifiNanIface::enableRequest_1_2Internal(
     return createWifiStatusFromLegacyError(legacy_status);
 }
 
-WifiStatus WifiNanIface::configRequest_1_2Internal(
+WifiStatus WifiNanIface::configRequest_1_4Internal(
     uint16_t cmd_id, const NanConfigRequest& msg1,
     const V1_2::NanConfigRequestSupplemental& msg2) {
     legacy_hal::NanConfigRequest legacy_msg;
-    if (!hidl_struct_util::convertHidlNanConfigRequest_1_2ToLegacy(
+    if (!hidl_struct_util::convertHidlNanConfigRequest_1_4ToLegacy(
             msg1, msg2, &legacy_msg)) {
         return createWifiStatus(WifiStatusCode::ERROR_INVALID_ARGS);
     }
@@ -881,7 +924,7 @@ WifiStatus WifiNanIface::configRequest_1_2Internal(
 }
 
 }  // namespace implementation
-}  // namespace V1_3
+}  // namespace V1_4
 }  // namespace wifi
 }  // namespace hardware
 }  // namespace android
