@@ -22,7 +22,7 @@
 namespace android {
 namespace hardware {
 namespace wifi {
-namespace V1_3 {
+namespace V1_4 {
 namespace implementation {
 namespace feature_flags {
 
@@ -43,12 +43,11 @@ class WifiFeatureFlags {
     virtual ~WifiFeatureFlags() = default;
 
     virtual std::vector<V1_0::IWifiChip::ChipMode> getChipModes();
-    virtual bool isApMacRandomizationDisabled();
 };
 
 }  // namespace feature_flags
 }  // namespace implementation
-}  // namespace V1_3
+}  // namespace V1_4
 }  // namespace wifi
 }  // namespace hardware
 }  // namespace android

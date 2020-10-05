@@ -20,7 +20,7 @@
 namespace android {
 namespace hardware {
 namespace wifi {
-namespace V1_3 {
+namespace V1_4 {
 namespace implementation {
 namespace legacy_hal {
 template <typename>
@@ -138,11 +138,16 @@ bool initHalFuncTableWithStubs(wifi_hal_fn* hal_fn) {
     populateStubFor(&hal_fn->wifi_reset_tx_power_scenario);
     populateStubFor(&hal_fn->wifi_set_radio_mode_change_handler);
     populateStubFor(&hal_fn->wifi_set_latency_mode);
+    populateStubFor(&hal_fn->wifi_set_thermal_mitigation_mode);
+    populateStubFor(&hal_fn->wifi_virtual_interface_create);
+    populateStubFor(&hal_fn->wifi_virtual_interface_delete);
+    populateStubFor(&hal_fn->wifi_map_dscp_access_category);
+    populateStubFor(&hal_fn->wifi_reset_dscp_mapping);
     return true;
 }
 }  // namespace legacy_hal
 }  // namespace implementation
-}  // namespace V1_3
+}  // namespace V1_4
 }  // namespace wifi
 }  // namespace hardware
 }  // namespace android

@@ -101,9 +101,28 @@ std::string getWlanIfaceName(unsigned idx) {
     return "wlan" + std::to_string(idx);
 }
 
+// Returns the dedicated iface name if one is defined.
+std::string getApIfaceName() {
+    std::array<char, PROPERTY_VALUE_MAX> buffer;
+    if (property_get("ro.vendor.wifi.sap.interface", buffer.data(), nullptr) ==
+        0) {
+        return {};
+    }
+    return buffer.data();
+}
+
 std::string getP2pIfaceName() {
     std::array<char, PROPERTY_VALUE_MAX> buffer;
     property_get("wifi.direct.interface", buffer.data(), "p2p0");
+    return buffer.data();
+}
+
+// Returns the dedicated iface name if one is defined.
+std::string getNanIfaceName() {
+    std::array<char, PROPERTY_VALUE_MAX> buffer;
+    if (property_get("wifi.aware.interface", buffer.data(), nullptr) == 0) {
+        return {};
+    }
     return buffer.data();
 }
 
@@ -307,7 +326,7 @@ std::vector<char> makeCharVec(const std::string& str) {
 namespace android {
 namespace hardware {
 namespace wifi {
-namespace V1_3 {
+namespace V1_4 {
 namespace implementation {
 using hidl_return_util::validateAndCall;
 using hidl_return_util::validateAndCallWithLock;
@@ -321,7 +340,6 @@ WifiChip::WifiChip(
       legacy_hal_(legacy_hal),
       mode_controller_(mode_controller),
       iface_util_(iface_util),
-      feature_flags_(feature_flags),
       is_valid_(true),
       current_mode_id_(feature_flags::chip_mode_ids::kInvalid),
       modes_(feature_flags.lock()->getChipModes()),
@@ -342,7 +360,7 @@ void WifiChip::invalidate() {
 
 bool WifiChip::isValid() { return is_valid_; }
 
-std::set<sp<V1_2::IWifiChipEventCallback>> WifiChip::getEventCallbacks() {
+std::set<sp<IWifiChipEventCallback>> WifiChip::getEventCallbacks() {
     return event_cb_handler_.getCallbacks();
 }
 
@@ -621,6 +639,22 @@ Return<void> WifiChip::debug(const hidl_handle& handle,
     return Void();
 }
 
+Return<void> WifiChip::createRttController_1_4(
+    const sp<IWifiIface>& bound_iface,
+    createRttController_1_4_cb hidl_status_cb) {
+    return validateAndCall(this, WifiStatusCode::ERROR_WIFI_CHIP_INVALID,
+                           &WifiChip::createRttControllerInternal_1_4,
+                           hidl_status_cb, bound_iface);
+}
+
+Return<void> WifiChip::registerEventCallback_1_4(
+    const sp<IWifiChipEventCallback>& event_callback,
+    registerEventCallback_cb hidl_status_cb) {
+    return validateAndCall(this, WifiStatusCode::ERROR_WIFI_CHIP_INVALID,
+                           &WifiChip::registerEventCallbackInternal_1_4,
+                           hidl_status_cb, event_callback);
+}
+
 void WifiChip::invalidateAndRemoveAllIfaces() {
     invalidateAndClearAll(ap_ifaces_);
     invalidateAndClearAll(nan_ifaces_);
@@ -668,30 +702,6 @@ WifiStatus WifiChip::registerEventCallbackInternal(
 std::pair<WifiStatus, uint32_t> WifiChip::getCapabilitiesInternal() {
     // Deprecated support for this callback.
     return {createWifiStatus(WifiStatusCode::ERROR_NOT_SUPPORTED), 0};
-}
-
-std::pair<WifiStatus, uint32_t> WifiChip::getCapabilitiesInternal_1_3() {
-    legacy_hal::wifi_error legacy_status;
-    uint32_t legacy_feature_set;
-    uint32_t legacy_logger_feature_set;
-    const auto ifname = getFirstActiveWlanIfaceName();
-    std::tie(legacy_status, legacy_feature_set) =
-        legacy_hal_.lock()->getSupportedFeatureSet(ifname);
-    if (legacy_status != legacy_hal::WIFI_SUCCESS) {
-        return {createWifiStatusFromLegacyError(legacy_status), 0};
-    }
-    std::tie(legacy_status, legacy_logger_feature_set) =
-        legacy_hal_.lock()->getLoggerSupportedFeatureSet(ifname);
-    if (legacy_status != legacy_hal::WIFI_SUCCESS) {
-        // some devices don't support querying logger feature set
-        legacy_logger_feature_set = 0;
-    }
-    uint32_t hidl_caps;
-    if (!hidl_struct_util::convertLegacyFeaturesToHidlChipCapabilities(
-            legacy_feature_set, legacy_logger_feature_set, &hidl_caps)) {
-        return {createWifiStatus(WifiStatusCode::ERROR_UNKNOWN), 0};
-    }
-    return {createWifiStatus(WifiStatusCode::SUCCESS), hidl_caps};
 }
 
 std::pair<WifiStatus, std::vector<IWifiChip::ChipMode>>
@@ -806,8 +816,16 @@ std::pair<WifiStatus, sp<IWifiApIface>> WifiChip::createApIfaceInternal() {
         return {createWifiStatus(WifiStatusCode::ERROR_NOT_AVAILABLE), {}};
     }
     std::string ifname = allocateApIfaceName();
-    sp<WifiApIface> iface =
-        new WifiApIface(ifname, legacy_hal_, iface_util_, feature_flags_);
+    legacy_hal::wifi_error legacy_status =
+        legacy_hal_.lock()->createVirtualInterface(
+            ifname,
+            hidl_struct_util::convertHidlIfaceTypeToLegacy(IfaceType::AP));
+    if (legacy_status != legacy_hal::WIFI_SUCCESS) {
+        LOG(ERROR) << "Failed to add interface: " << ifname << " "
+                   << legacyErrorToString(legacy_status);
+        return {createWifiStatusFromLegacyError(legacy_status), {}};
+    }
+    sp<WifiApIface> iface = new WifiApIface(ifname, legacy_hal_, iface_util_);
     ap_ifaces_.push_back(iface);
     for (const auto& callback : event_cb_handler_.getCallbacks()) {
         if (!callback->onIfaceAdded(IfaceType::AP, ifname).isOk()) {
@@ -845,6 +863,12 @@ WifiStatus WifiChip::removeApIfaceInternal(const std::string& ifname) {
     // nan/rtt objects over AP iface. But, there is no harm to do it
     // here and not make that assumption all over the place.
     invalidateAndRemoveDependencies(ifname);
+    legacy_hal::wifi_error legacy_status =
+        legacy_hal_.lock()->deleteVirtualInterface(ifname);
+    if (legacy_status != legacy_hal::WIFI_SUCCESS) {
+        LOG(ERROR) << "Failed to remove interface: " << ifname << " "
+                   << legacyErrorToString(legacy_status);
+    }
     invalidateAndClear(ap_ifaces_, iface);
     for (const auto& callback : event_cb_handler_.getCallbacks()) {
         if (!callback->onIfaceRemoved(IfaceType::AP, ifname).isOk()) {
@@ -859,9 +883,16 @@ std::pair<WifiStatus, sp<IWifiNanIface>> WifiChip::createNanIfaceInternal() {
     if (!canCurrentModeSupportIfaceOfTypeWithCurrentIfaces(IfaceType::NAN)) {
         return {createWifiStatus(WifiStatusCode::ERROR_NOT_AVAILABLE), {}};
     }
-    // These are still assumed to be based on wlan0.
-    std::string ifname = getFirstActiveWlanIfaceName();
-    sp<WifiNanIface> iface = new WifiNanIface(ifname, legacy_hal_, iface_util_);
+    bool is_dedicated_iface = true;
+    std::string ifname = getNanIfaceName();
+    if (ifname.empty() || !iface_util_.lock()->ifNameToIndex(ifname)) {
+        // Use the first shared STA iface (wlan0) if a dedicated aware iface is
+        // not defined.
+        ifname = getFirstActiveWlanIfaceName();
+        is_dedicated_iface = false;
+    }
+    sp<WifiNanIface> iface =
+        new WifiNanIface(ifname, is_dedicated_iface, legacy_hal_, iface_util_);
     nan_ifaces_.push_back(iface);
     for (const auto& callback : event_cb_handler_.getCallbacks()) {
         if (!callback->onIfaceAdded(IfaceType::NAN, ifname).isOk()) {
@@ -948,11 +979,21 @@ WifiStatus WifiChip::removeP2pIfaceInternal(const std::string& ifname) {
     return createWifiStatus(WifiStatusCode::SUCCESS);
 }
 
-std::pair<WifiStatus, sp<IWifiStaIface>> WifiChip::createStaIfaceInternal() {
+std::pair<WifiStatus, sp<V1_3::IWifiStaIface>>
+WifiChip::createStaIfaceInternal() {
     if (!canCurrentModeSupportIfaceOfTypeWithCurrentIfaces(IfaceType::STA)) {
         return {createWifiStatus(WifiStatusCode::ERROR_NOT_AVAILABLE), {}};
     }
     std::string ifname = allocateStaIfaceName();
+    legacy_hal::wifi_error legacy_status =
+        legacy_hal_.lock()->createVirtualInterface(
+            ifname,
+            hidl_struct_util::convertHidlIfaceTypeToLegacy(IfaceType::STA));
+    if (legacy_status != legacy_hal::WIFI_SUCCESS) {
+        LOG(ERROR) << "Failed to add interface: " << ifname << " "
+                   << legacyErrorToString(legacy_status);
+        return {createWifiStatusFromLegacyError(legacy_status), {}};
+    }
     sp<WifiStaIface> iface = new WifiStaIface(ifname, legacy_hal_, iface_util_);
     sta_ifaces_.push_back(iface);
     for (const auto& callback : event_cb_handler_.getCallbacks()) {
@@ -972,7 +1013,7 @@ WifiChip::getStaIfaceNamesInternal() {
     return {createWifiStatus(WifiStatusCode::SUCCESS), getNames(sta_ifaces_)};
 }
 
-std::pair<WifiStatus, sp<IWifiStaIface>> WifiChip::getStaIfaceInternal(
+std::pair<WifiStatus, sp<V1_3::IWifiStaIface>> WifiChip::getStaIfaceInternal(
     const std::string& ifname) {
     const auto iface = findUsingName(sta_ifaces_, ifname);
     if (!iface.get()) {
@@ -988,6 +1029,12 @@ WifiStatus WifiChip::removeStaIfaceInternal(const std::string& ifname) {
     }
     // Invalidate & remove any dependent objects first.
     invalidateAndRemoveDependencies(ifname);
+    legacy_hal::wifi_error legacy_status =
+        legacy_hal_.lock()->deleteVirtualInterface(ifname);
+    if (legacy_status != legacy_hal::WIFI_SUCCESS) {
+        LOG(ERROR) << "Failed to remove interface: " << ifname << " "
+                   << legacyErrorToString(legacy_status);
+    }
     invalidateAndClear(sta_ifaces_, iface);
     for (const auto& callback : event_cb_handler_.getCallbacks()) {
         if (!callback->onIfaceRemoved(IfaceType::STA, ifname).isOk()) {
@@ -998,18 +1045,10 @@ WifiStatus WifiChip::removeStaIfaceInternal(const std::string& ifname) {
     return createWifiStatus(WifiStatusCode::SUCCESS);
 }
 
-std::pair<WifiStatus, sp<IWifiRttController>>
-WifiChip::createRttControllerInternal(const sp<IWifiIface>& bound_iface) {
-    if (sta_ifaces_.size() == 0 &&
-        !canCurrentModeSupportIfaceOfType(IfaceType::STA)) {
-        LOG(ERROR) << "createRttControllerInternal: Chip cannot support STAs "
-                      "(and RTT by extension)";
-        return {createWifiStatus(WifiStatusCode::ERROR_NOT_AVAILABLE), {}};
-    }
-    sp<WifiRttController> rtt = new WifiRttController(
-        getFirstActiveWlanIfaceName(), bound_iface, legacy_hal_);
-    rtt_controllers_.emplace_back(rtt);
-    return {createWifiStatus(WifiStatusCode::SUCCESS), rtt};
+std::pair<WifiStatus, sp<V1_0::IWifiRttController>>
+WifiChip::createRttControllerInternal(const sp<IWifiIface>& /*bound_iface*/) {
+    LOG(ERROR) << "createRttController is not supported on this HAL";
+    return {createWifiStatus(WifiStatusCode::ERROR_NOT_SUPPORTED), {}};
 }
 
 std::pair<WifiStatus, std::vector<WifiDebugRingBufferStatus>>
@@ -1047,6 +1086,12 @@ WifiStatus WifiChip::startLoggingToDebugRingBufferInternal(
             max_interval_in_sec, min_data_size_in_bytes);
     ringbuffer_map_.insert(std::pair<std::string, Ringbuffer>(
         ring_name, Ringbuffer(kMaxBufferSizeBytes)));
+    // if verbose logging enabled, turn up HAL daemon logging as well.
+    if (verbose_level < WifiDebugRingBufferVerboseLevel::VERBOSE) {
+        android::base::SetMinimumLogSeverity(android::base::DEBUG);
+    } else {
+        android::base::SetMinimumLogSeverity(android::base::VERBOSE);
+    }
     return createWifiStatusFromLegacyError(legacy_status);
 }
 
@@ -1145,11 +1190,9 @@ WifiStatus WifiChip::setLatencyModeInternal(LatencyMode mode) {
 }
 
 WifiStatus WifiChip::registerEventCallbackInternal_1_2(
-    const sp<V1_2::IWifiChipEventCallback>& event_callback) {
-    if (!event_cb_handler_.addCallback(event_callback)) {
-        return createWifiStatus(WifiStatusCode::ERROR_UNKNOWN);
-    }
-    return createWifiStatus(WifiStatusCode::SUCCESS);
+    const sp<V1_2::IWifiChipEventCallback>& /* event_callback */) {
+    // Deprecated support for this callback.
+    return createWifiStatus(WifiStatusCode::ERROR_NOT_SUPPORTED);
 }
 
 WifiStatus WifiChip::selectTxPowerScenarioInternal_1_2(
@@ -1158,6 +1201,53 @@ WifiStatus WifiChip::selectTxPowerScenarioInternal_1_2(
         getFirstActiveWlanIfaceName(),
         hidl_struct_util::convertHidlTxPowerScenarioToLegacy_1_2(scenario));
     return createWifiStatusFromLegacyError(legacy_status);
+}
+
+std::pair<WifiStatus, uint32_t> WifiChip::getCapabilitiesInternal_1_3() {
+    legacy_hal::wifi_error legacy_status;
+    uint32_t legacy_feature_set;
+    uint32_t legacy_logger_feature_set;
+    const auto ifname = getFirstActiveWlanIfaceName();
+    std::tie(legacy_status, legacy_feature_set) =
+        legacy_hal_.lock()->getSupportedFeatureSet(ifname);
+    if (legacy_status != legacy_hal::WIFI_SUCCESS) {
+        return {createWifiStatusFromLegacyError(legacy_status), 0};
+    }
+    std::tie(legacy_status, legacy_logger_feature_set) =
+        legacy_hal_.lock()->getLoggerSupportedFeatureSet(ifname);
+    if (legacy_status != legacy_hal::WIFI_SUCCESS) {
+        // some devices don't support querying logger feature set
+        legacy_logger_feature_set = 0;
+    }
+    uint32_t hidl_caps;
+    if (!hidl_struct_util::convertLegacyFeaturesToHidlChipCapabilities(
+            legacy_feature_set, legacy_logger_feature_set, &hidl_caps)) {
+        return {createWifiStatus(WifiStatusCode::ERROR_UNKNOWN), 0};
+    }
+    return {createWifiStatus(WifiStatusCode::SUCCESS), hidl_caps};
+}
+
+std::pair<WifiStatus, sp<IWifiRttController>>
+WifiChip::createRttControllerInternal_1_4(const sp<IWifiIface>& bound_iface) {
+    if (sta_ifaces_.size() == 0 &&
+        !canCurrentModeSupportIfaceOfType(IfaceType::STA)) {
+        LOG(ERROR)
+            << "createRttControllerInternal_1_4: Chip cannot support STAs "
+               "(and RTT by extension)";
+        return {createWifiStatus(WifiStatusCode::ERROR_NOT_AVAILABLE), {}};
+    }
+    sp<WifiRttController> rtt = new WifiRttController(
+        getFirstActiveWlanIfaceName(), bound_iface, legacy_hal_);
+    rtt_controllers_.emplace_back(rtt);
+    return {createWifiStatus(WifiStatusCode::SUCCESS), rtt};
+}
+
+WifiStatus WifiChip::registerEventCallbackInternal_1_4(
+    const sp<IWifiChipEventCallback>& event_callback) {
+    if (!event_cb_handler_.addCallback(event_callback)) {
+        return createWifiStatus(WifiStatusCode::ERROR_UNKNOWN);
+    }
+    return createWifiStatus(WifiStatusCode::SUCCESS);
 }
 
 WifiStatus WifiChip::handleChipConfiguration(
@@ -1234,13 +1324,18 @@ WifiStatus WifiChip::registerDebugRingBufferCallback() {
                 LOG(ERROR) << "Error converting ring buffer status";
                 return;
             }
-            const auto& target = shared_ptr_this->ringbuffer_map_.find(name);
-            if (target != shared_ptr_this->ringbuffer_map_.end()) {
-                Ringbuffer& cur_buffer = target->second;
-                cur_buffer.append(data);
-            } else {
-                LOG(ERROR) << "Ringname " << name << " not found";
-                return;
+            {
+                std::unique_lock<std::mutex> lk(shared_ptr_this->lock_t);
+                const auto& target =
+                    shared_ptr_this->ringbuffer_map_.find(name);
+                if (target != shared_ptr_this->ringbuffer_map_.end()) {
+                    Ringbuffer& cur_buffer = target->second;
+                    cur_buffer.append(data);
+                } else {
+                    LOG(ERROR) << "Ringname " << name << " not found";
+                    return;
+                }
+                // unlock
             }
         };
     legacy_hal::wifi_error legacy_status =
@@ -1262,7 +1357,7 @@ WifiStatus WifiChip::registerRadioModeChangeCallback() {
                 LOG(ERROR) << "Callback invoked on an invalid object";
                 return;
             }
-            std::vector<V1_2::IWifiChipEventCallback::RadioModeInfo>
+            std::vector<IWifiChipEventCallback::RadioModeInfo>
                 hidl_radio_mode_infos;
             if (!hidl_struct_util::convertLegacyWifiMacInfosToHidl(
                     mac_infos, &hidl_radio_mode_infos)) {
@@ -1270,9 +1365,9 @@ WifiStatus WifiChip::registerRadioModeChangeCallback() {
                 return;
             }
             for (const auto& callback : shared_ptr_this->getEventCallbacks()) {
-                if (!callback->onRadioModeChange(hidl_radio_mode_infos)
+                if (!callback->onRadioModeChange_1_4(hidl_radio_mode_infos)
                          .isOk()) {
-                    LOG(ERROR) << "Failed to invoke onRadioModeChange"
+                    LOG(ERROR) << "Failed to invoke onRadioModeChange_1_4"
                                << " callback on: " << toString(callback);
                 }
             }
@@ -1497,6 +1592,11 @@ std::string WifiChip::allocateApOrStaIfaceName(uint32_t start_idx) {
 // AP iface names start with idx 1 for modes supporting
 // concurrent STA and not dual AP, else start with idx 0.
 std::string WifiChip::allocateApIfaceName() {
+    // Check if we have a dedicated iface for AP.
+    std::string ifname = getApIfaceName();
+    if (!ifname.empty()) {
+        return ifname;
+    }
     return allocateApOrStaIfaceName((isStaApConcurrencyAllowedInCurrentMode() &&
                                      !isDualApAllowedInCurrentMode())
                                         ? 1
@@ -1515,31 +1615,35 @@ bool WifiChip::writeRingbufferFilesInternal() {
         return false;
     }
     // write ringbuffers to file
-    for (const auto& item : ringbuffer_map_) {
-        const Ringbuffer& cur_buffer = item.second;
-        if (cur_buffer.getData().empty()) {
-            continue;
-        }
-        const std::string file_path_raw =
-            kTombstoneFolderPath + item.first + "XXXXXXXXXX";
-        const int dump_fd = mkstemp(makeCharVec(file_path_raw).data());
-        if (dump_fd == -1) {
-            PLOG(ERROR) << "create file failed";
-            return false;
-        }
-        unique_fd file_auto_closer(dump_fd);
-        for (const auto& cur_block : cur_buffer.getData()) {
-            if (write(dump_fd, cur_block.data(),
-                      sizeof(cur_block[0]) * cur_block.size()) == -1) {
-                PLOG(ERROR) << "Error writing to file";
+    {
+        std::unique_lock<std::mutex> lk(lock_t);
+        for (const auto& item : ringbuffer_map_) {
+            const Ringbuffer& cur_buffer = item.second;
+            if (cur_buffer.getData().empty()) {
+                continue;
+            }
+            const std::string file_path_raw =
+                kTombstoneFolderPath + item.first + "XXXXXXXXXX";
+            const int dump_fd = mkstemp(makeCharVec(file_path_raw).data());
+            if (dump_fd == -1) {
+                PLOG(ERROR) << "create file failed";
+                return false;
+            }
+            unique_fd file_auto_closer(dump_fd);
+            for (const auto& cur_block : cur_buffer.getData()) {
+                if (write(dump_fd, cur_block.data(),
+                          sizeof(cur_block[0]) * cur_block.size()) == -1) {
+                    PLOG(ERROR) << "Error writing to file";
+                }
             }
         }
+        // unlock
     }
     return true;
 }
 
 }  // namespace implementation
-}  // namespace V1_3
+}  // namespace V1_4
 }  // namespace wifi
 }  // namespace hardware
 }  // namespace android

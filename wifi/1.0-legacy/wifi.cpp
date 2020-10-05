@@ -28,7 +28,7 @@ static constexpr android::hardware::wifi::V1_0::ChipId kChipId = 0;
 namespace android {
 namespace hardware {
 namespace wifi {
-namespace V1_3 {
+namespace V1_4 {
 namespace implementation {
 using hidl_return_util::validateAndCall;
 using hidl_return_util::validateAndCallWithLock;
@@ -124,6 +124,8 @@ WifiStatus Wifi::startInternal() {
             }
         }
         LOG(ERROR) << "Wifi HAL start failed";
+        // Clear the event callback objects since the HAL start failed.
+        event_cb_handler_.invalidate();
     }
     return wifi_status;
 }
@@ -158,6 +160,8 @@ WifiStatus Wifi::stopInternal(
         }
         LOG(ERROR) << "Wifi HAL stop failed";
     }
+    // Clear the event callback objects since the HAL is now stopped.
+    event_cb_handler_.invalidate();
     return wifi_status;
 }
 
@@ -210,7 +214,7 @@ WifiStatus Wifi::stopLegacyHalAndDeinitializeModeController(
     return createWifiStatus(WifiStatusCode::SUCCESS);
 }
 }  // namespace implementation
-}  // namespace V1_3
+}  // namespace V1_4
 }  // namespace wifi
 }  // namespace hardware
 }  // namespace android
