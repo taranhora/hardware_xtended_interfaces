@@ -7,6 +7,7 @@ hidl_interface {
         "types.hal",
         "IGloveMode.hal",
         "IKeyDisabler.hal",
+        "IKeySwapper.hal",
         "IStylusMode.hal",
         "ITouchscreenGesture.hal",
     ],
